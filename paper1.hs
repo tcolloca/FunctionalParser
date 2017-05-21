@@ -43,7 +43,7 @@ ap2 (op, y) = (`op` y)
 -- Elementary Parsers --
 
 symbol :: Eq a => a -> Parser a a
-symbol c s = satisfy (c ==) s
+symbol c = \s -> satisfy (c ==) s
 
 spsymbol :: Char -> Parser Char Char
 spsymbol c = sp (symbol c)
@@ -58,14 +58,17 @@ satisfy :: (a -> Bool) -> Parser a a
 satisfy p [] = []
 satisfy p (x:xs) = [(xs, x) | p x]
 
+item :: Parser a a
+item = satisfy (const True)
+
 succeed :: r -> Parser a r
-succeed r s = [(s, r)]
+succeed r = \s -> [(s, r)]
 
 epsilon :: Parser a ()
 epsilon = succeed ()
 
 none :: Parser a r
-none s = []
+none = \s -> []
 
 -- Numbers --
 
@@ -107,8 +110,14 @@ float = fixed
 
 -- Strings --
 
-identifier :: Parser Char String
-identifier = many1 (satisfy isAlpha)
+lower :: Parser Char String
+lower = many1 (satisfy isLower)
+
+upper :: Parser Char String
+upper = many1 (satisfy isUpper)
+
+alphaNum :: Parser Char String
+alphaNum = many1 (satisfy isAlpha)
 
 removesp :: Parser Char String
 removesp = (greedy (negl ' ' (satisfy (/=' ')))) <. (negl ' ' epsilon)
@@ -154,9 +163,9 @@ treeToParens (Bin (t1, t2)) = "(" ++ (treeToParens t1) ++ ")" ++ (treeToParens t
 -- Parser Combinators --
 
 (<.>) :: Parser a r -> Parser a s -> Parser a (r,s)
-(p1 <.> p2) s = [(xs2, (r1, r2))
-                | (xs1, r1) <- p1 s
-                , (xs2, r2)<- p2 xs1]
+p1 <.> p2 = \s -> [(xs2, (r1, r2))
+                    | (xs1, r1) <- p1 s
+                    , (xs2, r2)<- p2 xs1]
 
 (<.) :: Parser a r -> Parser a s -> Parser a r
 p1 <. p2 = p1 <.> p2 <@ fst
@@ -164,14 +173,28 @@ p1 <. p2 = p1 <.> p2 <@ fst
 (.>) :: Parser a r -> Parser a s -> Parser a s
 p1 .> p2 = p1 <.> p2 <@ snd
 
+-- Bind
+(<@.>) :: Parser a r -> (r -> Parser a s) -> Parser a s
+p <@.> f = \s -> concat [f r xs | (xs, r) <- p s]  
+
 (<:.>) :: Parser a r -> Parser a [r] -> Parser a [r]
 p1 <:.> p2 = p1 <.> p2 <@ list
 
 (<|>) :: Parser a r -> Parser a r -> Parser a r
-(p1 <|> p2) s = p1 s ++ p2 s
+p1 <|> p2 = \s -> p1 s ++ p2 s
 
 (<~>) :: (Eq a, Eq r) => Parser a r -> Parser a r -> Parser a r
-(p1 <~> p2) s = p1 s \\ p2 s  
+p1 <~> p2 = \s -> p1 s \\ p2 s
+
+compose :: Parser a [b] -> Parser b c -> Parser a c
+compose p q = \s -> [(xs, r2)
+                    | (xs, r1) <- p s
+                    , (_, r2) <- just q r1]
+
+composeMany :: Parser a b -> Parser b c -> Parser a c
+composeMany p q = \s -> [(xs, r2)
+                    | (xs, r1) <- many p s
+                    , (_, r2) <- just q r1]
 
 -- Parser Transformers --
 
@@ -182,12 +205,12 @@ sp :: Parser Char r -> Parser Char r
 sp = negl ' ' 
 
 just :: Parser a r -> Parser a r
-just p xs = [([], r) 
-            | (ys, r) <- p xs
-            , null ys]
+just p = \s -> [([], r) 
+                 | (ys, r) <- p s
+                 , null ys]
 
 (<@) :: Parser a r -> (r -> s) -> Parser a s
-(p <@ f) s = [(xs, f r) | (xs, r) <- p s]
+p <@ f = \s -> [(xs, f r) | (xs, r) <- p s]
 
 (<?@) :: Parser a [r] -> (v, r -> v) -> Parser a v
 p <?@ (z, f) = p <@ g
@@ -223,10 +246,6 @@ choice = foldr (<|>) none
 chainl :: Parser s a -> Parser s (a -> a -> a) -> Parser s a
 chainl p s = p <.> many (s <.> p) <@ uncurry (foldl (flip ap2))
 
--- chainr' p s = q
--- where q = p <*> (option (s <*> q) <?@ (id,ap2) )
--- <@ flip ap
-
 chainr :: Parser s a -> Parser s (a -> a -> a) -> Parser s a
 chainr p s = many (p <.> s) <.> p <@ uncurry (flip (foldr ap1)) 
 
@@ -243,9 +262,6 @@ greedy1 = first . many1
 
 compulsion :: Parser a b -> Parser a [b]
 compulsion = first . option
-
-compose :: Parser a [b] -> Parser b c -> [a] -> [([b], c)]
-compose p q s = q ((some p) s)
 
 -- Higher order parser parser functions --
 
@@ -270,7 +286,7 @@ addis = [ ('+',(:+:)), ('-',(:-:)) ]
 
 fact :: Parser Char Expr
 fact = float <@ Con
-       <|> identifier 
+       <|> alphaNum 
            <.> (option (parenthesized (commaList expr)) <?@ (Var, flip Fun))
            <@ ap'
        <|> parenthesized expr
@@ -303,7 +319,7 @@ type CFG = (SymbolSet, SymbolSet, String, Symbol)
 
 blockRules = "BLOCK ::= begin BLOCK end BLOCK | ."
 block4tup = (parseNont, parseTerm, blockRules, Nont "BLOCK")
-blockParser = twopass makeSym (parserGen block4tup)
+blockParser = composeMany makeSym (parserGen block4tup)
 
 parseNont :: Parser Char String
 parseNont = greedy1 (satisfy isUpper) 
@@ -338,8 +354,3 @@ parseSym gram s@(Term _) = (symbol s <@ const []) <@ Node s
 parserGen :: CFG -> Parser Symbol Tree
 parserGen (nontp, termp, bnfstring, start) 
     = some (bnf nontp termp <@ parseGram) bnfstring start
-
-twopass :: Parser a b -> Parser b c -> Parser a c
-twopass lex synt xs = [ (rest, tree)
-                      | (rest, tokens) <- many lex xs
-                      , (_, tree) <- just synt tokens ]
