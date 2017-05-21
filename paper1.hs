@@ -1,14 +1,23 @@
-import Data.Char (ord, isDigit)
+import Data.Char (ord, isDigit, isAlpha, isUpper, isLower)
 import Data.List
 
 type Parser symbol result = [symbol] -> [([symbol], result)]
 type DetParser symbol result = [symbol] -> result
 
-data Tree = Nil | Bin (Tree,Tree) deriving Show
-
 infixr 6 <.>, <., .>
 infixr 5 <@, <?@
 infixr 4 <|>
+
+-- Map --
+
+type Env k v = [(k,v)]
+
+assoc :: Eq k => Env k v -> k -> v 
+assoc ((ki, vi):xs) k | ki == k = vi
+                      | otherwise = assoc xs k
+
+mapenv :: (v -> w) -> Env k v -> Env k w
+mapenv f env = foldr g [] env where g (k, v) l = (k, f v) : l  
 
 -- Basic Functions --
 
@@ -22,6 +31,9 @@ list (x, xs) = x:xs
 ap :: (a -> b, a) -> b
 ap (f, x) = f x
 
+ap' :: (a, a -> b) -> b
+ap' (x, f) = f x
+
 ap1 :: (a, a -> b -> c) -> b -> c 
 ap1 (a, op) = (a `op`)
 
@@ -33,8 +45,14 @@ ap2 (op, y) = (`op` y)
 symbol :: Eq a => a -> Parser a a
 symbol c s = satisfy (c ==) s
 
+spsymbol :: Char -> Parser Char Char
+spsymbol c = sp (symbol c)
+
 token :: Eq a => [a] -> Parser a [a]
 token = sequenced . (map symbol)
+
+sptoken :: [Char] -> Parser Char [Char]
+sptoken t = sp (token t)
 
 satisfy :: (a -> Bool) -> Parser a a
 satisfy p [] = []
@@ -87,6 +105,14 @@ float = fixed
         <@ f
         where f (m,e) = m * power e         
 
+-- Strings --
+
+identifier :: Parser Char String
+identifier = many1 (satisfy isAlpha)
+
+removesp :: Parser Char String
+removesp = (greedy (negl ' ' (satisfy (/=' ')))) <. (negl ' ' epsilon)
+
 -- Enclosed --
 
 parenthesized, bracketed, curlybracketed :: Parser Char r -> Parser Char r
@@ -103,13 +129,15 @@ enterList p = listOf p (symbol '\n')
 
 -- Parens --
 
+data Tree2 = Nil | Bin (Tree2,Tree2) deriving Show
+
 open :: Parser Char Char
 open = symbol '('
 
 close :: Parser Char Char
 close = symbol ')'
 
-parens :: Parser Char Tree
+parens :: Parser Char Tree2
 parens = foldParens Bin Nil
 
 nesting :: Parser Char Int
@@ -119,7 +147,7 @@ foldParens :: ((r, r) -> r) -> r -> Parser Char r
 foldParens f z = pack open (foldParens f z) close <.> (foldParens f z) <@ f
          <|> succeed z
 
-treeToParens :: Tree -> String
+treeToParens :: Tree2 -> String
 treeToParens Nil = ""
 treeToParens (Bin (t1, t2)) = "(" ++ (treeToParens t1) ++ ")" ++ (treeToParens t2) 
 
@@ -149,6 +177,9 @@ p1 <:.> p2 = p1 <.> p2 <@ list
 
 negl :: Eq a => a -> Parser a r -> Parser a r
 negl a p = p . dropWhile (== a)
+
+sp :: Parser Char r -> Parser Char r
+sp = negl ' ' 
 
 just :: Parser a r -> Parser a r
 just p xs = [([], r) 
@@ -212,3 +243,103 @@ greedy1 = first . many1
 
 compulsion :: Parser a b -> Parser a [b]
 compulsion = first . option
+
+compose :: Parser a [b] -> Parser b c -> [a] -> [([b], c)]
+compose p q s = q ((some p) s)
+
+-- Higher order parser parser functions --
+
+type Op a b = (a, b -> b -> b)
+
+gen :: Eq a => [Op a r] -> Parser a r -> Parser a r
+gen ops p = chainr p (choice (map f ops))
+            where f (s, g) = symbol s <@ const g
+
+-- Arithmetic Expressions --
+
+data Expr = Con Float
+          | Var String
+          | Fun String [Expr]
+          | Expr :+: Expr
+          | Expr :-: Expr
+          | Expr :*: Expr
+          | Expr :/: Expr deriving Show
+
+multis = [ ('*',(:*:)), ('/',(:/:)) ]
+addis = [ ('+',(:+:)), ('-',(:-:)) ]
+
+fact :: Parser Char Expr
+fact = float <@ Con
+       <|> identifier 
+           <.> (option (parenthesized (commaList expr)) <?@ (Var, flip Fun))
+           <@ ap'
+       <|> parenthesized expr
+
+expr' :: Parser Char Expr
+expr' = foldr gen fact [addis, multis]
+
+expr :: Parser Char Expr
+expr = compose removesp expr'
+
+-- Grammars --
+
+data Symbol = Term String
+            | Nont String deriving Show
+
+instance Eq Symbol where
+  (==) (Term s1) (Term s2) = s1 == s2 
+  (==) (Nont s1) (Nont s2) = s1 == s2
+  (==) _ _ = False
+
+data Tree = Node Symbol [Tree] deriving Show
+
+type Alt = [Symbol]
+type Rhs = [Alt]
+
+type Gram = Env Symbol Rhs
+
+type SymbolSet = Parser Char String
+type CFG = (SymbolSet, SymbolSet, String, Symbol)
+
+blockRules = "BLOCK ::= begin BLOCK end BLOCK | ."
+block4tup = (parseNont, parseTerm, blockRules, Nont "BLOCK")
+blockParser = twopass makeSym (parserGen block4tup)
+
+parseNont :: Parser Char String
+parseNont = greedy1 (satisfy isUpper) 
+
+parseTerm :: Parser Char String
+parseTerm = greedy1 (satisfy isLower)
+
+makeSym :: Parser Char Symbol
+makeSym = sp parseTerm <@ Term
+
+bnf :: Parser Char String -> Parser Char String -> Parser Char Gram
+bnf nontp termp = many rule
+                  where rule = (nont <.> (sptoken "::=") .> rhs <. (spsymbol '.'))
+                        rhs = listOf alt (spsymbol '|')
+                        alt = many (term <|> nont)
+                        term = sp termp <@ Term
+                        nont = sp nontp <@ Nont
+
+parseGram :: Gram -> Symbol -> Parser Symbol Tree
+parseGram gram start = parseSym gram start
+
+parseRhs :: Gram -> Rhs -> Parser Symbol [Tree]
+parseRhs gram = choice . map (parseAlt gram)
+
+parseAlt :: Gram -> Alt -> Parser Symbol [Tree]
+parseAlt gram = sequenced . map (parseSym gram)
+
+parseSym :: Gram -> Symbol -> Parser Symbol Tree
+parseSym gram s@(Nont _) = parseRhs gram (assoc gram s) <@ Node s
+parseSym gram s@(Term _) = (symbol s <@ const []) <@ Node s
+
+parserGen :: CFG -> Parser Symbol Tree
+parserGen (nontp, termp, bnfstring, start) 
+    = some (bnf nontp termp <@ parseGram) bnfstring start
+
+twopass :: Parser a b -> Parser b c -> Parser a c
+twopass lex synt xs = [ (rest, tree)
+                      | (rest, tokens) <- many lex xs
+                      , (_, tree) <- just synt tokens ]
