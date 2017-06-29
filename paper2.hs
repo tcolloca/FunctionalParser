@@ -60,7 +60,7 @@ instance MonadPlus Numeric where
     _ `mplus` (Num (a, b)) = Num (a, b)
     _ `mplus` _ = Void
 
-type Parser a = StateT String Maybe a
+type Parser a = StateT String [] a
 
 -- Monadic Parser --
 
@@ -117,9 +117,7 @@ ap2 y (x, f) = f x y
 -- Elementary Parsers --
 
 item :: (Monad m, MonadPlus m) => StateT String m Char
-item = StateT (\s -> case s of
-                [] -> mzero
-                (x:xs) -> return (x, xs))
+item = StateT (\s -> [(x, xs) | (x:_, xs) <- runStateT (update tail) s])
 
 sat :: (Char -> Bool) -> Parser Char
 sat p = item >>= \x ->
