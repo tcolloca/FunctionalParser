@@ -37,6 +37,15 @@ import Data.Char (ord)
 
 data Numeric a = Num (a, Int) | Void deriving Show
 
+class Monad m => StateMonad m s where
+  update :: (s -> s) -> m s
+  
+  set :: s -> m s
+  set s = update (\_ -> s)
+  
+  fetch :: m s
+  fetch = update id
+
 instance Applicative Numeric where
     pure  = return
     (<*>) = ap
@@ -60,12 +69,12 @@ instance MonadPlus Numeric where
     _ `mplus` (Num (a, b)) = Num (a, b)
     _ `mplus` _ = Void
 
+instance Monad m => StateMonad (StateT s m) s where 
+    -- update :: Monad m => (s -> s) -> StateT s m s
+    update f = StateT (\s -> return (s, f s))
+
 type Parser a = StateT String [] a
 
--- Monadic Parser --
-
-update :: Monad m => (s -> s) -> StateT s m s
-update f = StateT (\s -> return (s, f s))
 
 -- Parser combintators --
 
@@ -116,8 +125,8 @@ ap2 y (x, f) = f x y
 
 -- Elementary Parsers --
 
-item :: (Monad m, MonadPlus m) => StateT String m Char
-item = StateT (\s -> [(x, xs) | (x:_, xs) <- runStateT (update tail) s])
+item :: Parser Char
+item = [x | (x:_) <- update tail]
 
 sat :: (Char -> Bool) -> Parser Char
 sat p = item >>= \x ->
