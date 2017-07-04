@@ -1,4 +1,5 @@
-{-# LANGUAGE TransformListComp, MonadComprehensions, TupleSections, FunctionalDependencies #-}
+{-# LANGUAGE TransformListComp, MonadComprehensions, TupleSections, FunctionalDependencies, GADTs,
+ExistentialQuantification, Rank2Types, TypeOperators, FlexibleInstances #-}
 
 import Data.Char (isSpace, isLetter, isAlphaNum)
 import Control.Monad (MonadPlus(..), ap, liftM)
@@ -7,7 +8,34 @@ import Data.Functor (Functor(..), (<$>))
 
 infixr 3 `opt`
 
+-- test --
+
+data Str = Str {input :: String}
+
+listToStr :: String -> Str
+listToStr ls = Str ls    
+
+instance Describes Char Char where
+    eqSymTok sym tok = sym == tok
+
+instance Provides Str Char Char where
+    splitState _ (Str []) = Nothing
+    splitState _ (Str (t:ts)) = Just (t, Str ts)
+
+instance Eof Str where
+    eof (Str l) = null l
+
+tom = (sym 'a') :: (Ph Str Char)
+
 -- Classes --
+
+class ParserFuns p where
+    (<.>) :: p (b -> a) -> p b -> p a
+    (<!>) :: p a -> p a -> p a
+    (<@>) :: (b -> a) -> p b -> p a
+    result :: a -> p a
+    epsilon :: p a
+    f <@> p = result f <.> p
 
 class symbol `Describes` token where
     eqSymTok :: symbol -> token -> Bool
@@ -15,14 +43,195 @@ class symbol `Describes` token where
 class Symbol p symbol token where
     sym :: symbol -> p token
 
+-- state symbol Provides token
 class Provides state symbol token | state symbol -> token where
     splitState :: symbol -> state -> Maybe (token, state)
 
 class Eof state where
     eof :: state -> Bool
 
-class ParserClass p where
+class ParserClass p state where
     parse :: p state a -> state -> a
+
+data Steps a where
+    Step :: Steps a -> Steps a
+    Fail :: Steps a
+    Apply :: (b -> a) -> Steps b -> Steps a
+
+stepsDone :: a -> Steps a
+stepsDone a = Apply (const a) Fail
+
+eval :: Steps a -> a
+eval (Apply f v) = f (eval v)
+eval (Step l) = eval l
+eval Fail = error "should not happen"
+
+norm :: Steps a -> Steps a
+norm (Apply f (Apply g l)) = norm (Apply (f . g) l)
+norm (Apply f (Step l)) = Step (Apply f l)
+norm (Apply f Fail) = Fail
+norm steps = steps
+
+best :: Steps a -> Steps a -> Steps a
+l `best` r = norm l `best'` norm r
+    where Fail      `best'` r        = r
+          l         `best'` Fail     = l
+          (Step l)  `best'` (Step r) = Step (l `best` r)
+          _         `best'` _        = Fail -- Ambiguous
+
+-- Recognizer --
+
+newtype R st a = R (forall r. (st -> Steps r) -> st -> Steps r)
+
+instance ParserFuns (R st) where
+    -- (<.>) :: R st (a -> b) -> R st a -> R st b
+    (R r1) <.> (R r2) = R (\k st -> r1 (r2 k) st)
+    --(<!>) :: R st a -> R st b -> R st a
+    (R r1) <!> (R r2) = R (\k st -> r1 k st `best` r2 k st)
+    --(<@>) :: (b -> a) -> R st b -> R st a
+    f <@> (R r) = R r
+    -- result :: a -> R st a     
+    result v = R (\k st -> k st)
+    -- epsilon :: R st a
+    epsilon = R (\k st -> Fail)
+
+instance ((symbol `Describes` token), (Provides state symbol token))
+    => Symbol (R state) symbol token where
+    sym a = R (\k st -> case splitState a st of
+                            Just (t, ss) -> if a `eqSymTok` t
+                                                then Step (k ss)
+                                                else Fail
+                            Nothing -> Fail) 
+
+-- History parser --
+
+newtype Ph st a = Ph (forall r. (a -> st -> Steps r) -> st -> Steps r)
+
+unPh (Ph p) = p
+
+instance ParserFuns (Ph st) where
+    -- (<.>) :: Ph st (a -> b) -> Ph st a -> Ph st b
+    (Ph p) <.> (Ph q) = Ph (\k -> p (\f -> q (\a -> k (f a)))) 
+    --(<!>) :: Ph st a -> Ph st b -> Ph st a
+    (Ph p1) <!> (Ph p2) = Ph (\k inp -> p1 k inp `best` p2 k inp)
+    --(<@>) :: (b -> a) -> Ph st b -> Ph st a
+    f <@> (Ph p) = Ph (\k -> p (\a -> k (f a)))
+    -- result :: a -> Ph st a
+    result a = Ph (\k -> k a)
+    -- epsilon :: Ph st a
+    epsilon = Ph (\k -> const Fail)
+
+instance ((symbol `Describes` token), (Provides state symbol token))
+    => Symbol (Ph state) symbol token where
+        -- symbol -> p token
+        sym a = Ph (\k st -> case splitState a st of
+                                Just (t, ss) -> if eqSymTok a t 
+                                                    then Step (k t ss)
+                                                    else Fail
+                                Nothing -> Fail)
+
+instance Eof state => ParserClass Ph state where
+    parse (Ph p) st = (eval . p (\r rest -> if eof rest
+                                                then stepsDone r 
+                                                else Fail)) st
+
+instance Functor (Ph state) where
+    fmap = liftM
+
+instance Applicative (Ph state) where
+    pure = return
+    (<*>) = ap
+    
+instance Monad (Ph state) where
+    (Ph p) >>= a2q = Ph (\k -> p (\a -> unPh (a2q a) k))
+    return = result
+
+-- Future parser --
+
+newtype Pf st a = Pf (forall r. (st -> Steps r) -> st -> Steps (a, r))
+
+unPf (Pf p) = p
+
+push :: v -> Steps r -> Steps (v, r)
+push v = Apply (\s -> (v, s))
+
+applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
+applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r))
+
+instance ParserFuns (Pf st) where
+    -- (<.>) :: Pf st (a -> b) -> Pf st a -> Pf st b
+    (Pf p) <.> (Pf q) = Pf (\k st -> applyf (p (q k) st)) 
+    --(<!>) :: Pf st a -> Pf st b -> Pf st a
+    (Pf p1) <!> (Pf p2) = Pf (\k st -> p1 k st `best` p2 k st)
+    -- result :: a -> Pf st a
+    result a = Pf (\k st -> push a (k st))
+    -- epsilon :: Pf st a
+    epsilon = Pf (\_ -> const Fail)
+
+instance ((symbol `Describes` token), (Provides state symbol token))
+    => Symbol (Pf state) symbol token where
+        -- symbol -> p token
+        sym a = Pf (\k st -> case splitState a st of
+                                Just (t, ss) -> if eqSymTok a t 
+                                                    then Step (push t (k ss))
+                                                    else Fail
+                                Nothing -> Fail)
+
+instance Eof state => ParserClass Pf state where
+    parse (Pf p) st = (fst . eval . p (\st -> if eof st
+                                                then undefined 
+                                                else error "end")) st
+
+instance Functor (Pf state) where
+    fmap = liftM
+
+instance Applicative (Pf state) where
+    pure = return
+    (<*>) = ap
+
+instance Monad (Pf state) where
+    (Pf p) >>= pv2q = Pf (\k st ->
+                            let steps = p (q k) st
+                                q = unPf (pv2q pv)
+                                pv = fst (eval steps)
+                            in Apply snd steps)
+    return = result
+
+-- Monadic parser --
+
+data Pm state a = Pm (Ph state a) (Pf state a)
+
+unPm_h (Pm (Ph h) _) = h
+unPm_f (Pm _ (Pf f)) = f
+
+instance ParserFuns (Pm st) where
+    (Pm hp fp) <.> ~(Pm hq fq) = Pm (hp <.> hq) (fp <.> fq)
+    (Pm hp fp) <!> (Pm hq fq) = Pm (hp <!> hq) (fp <!> fq)
+    result a = Pm (result a) (result a)
+    epsilon = Pm epsilon epsilon
+
+instance ((symbol `Describes` token), (Provides state symbol token))
+    => Symbol (Pm state) symbol token where
+    sym a = Pm (sym a) (sym a)
+
+instance Eof state => ParserClass Pm state where
+    parse (Pm _ (Pf fp)) = fst . eval . fp (\rest -> if eof rest
+                                                        then undefined
+                                                        else error "parse")
+
+instance Functor (Pm state) where
+    fmap = liftM
+
+instance Applicative (Pm state) where
+    pure = return
+    (<*>) = ap
+
+instance Monad (Pm state) where
+    (Pm (Ph p) _) >>= a2q = Pm 
+        (Ph (\k -> p (\a -> unPm_h (a2q a) k)))
+        (Pf (\k -> p (\a -> unPm_f (a2q a) k)))
+        
+    return = result
 
 -- Parser definition --
 
@@ -78,9 +287,6 @@ satisfy pred = Parser (\inp -> case inp of
                     (x:xs) | pred x -> return (x, xs)
                     otherwise -> empty)
 
-epsilon :: Parser s t
-epsilon = Parser (const empty)
-
 symbol :: Eq a => a -> Parser a a
 symbol c = satisfy (== c)
 
@@ -121,7 +327,7 @@ chainr :: Parser s (a -> a -> a) -> Parser s a -> Parser s a
 chainr op p = r where r = p <??> (flip <$> op <*> r)
 
 choice :: [Parser s a] -> Parser s a
-choice = foldr (<|>) epsilon
+choice = foldr (<|>) empty
 
 seqnc :: [Parser s a] -> Parser s [a]
 seqnc (p:ps) = p <:*> seqnc ps
