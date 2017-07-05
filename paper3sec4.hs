@@ -25,17 +25,11 @@ instance Provides Str Char Char where
 instance Eof Str where
     eof (Str l) = null l
 
-tom = (sym 'a') :: (Ph Str Char)
+tom = (sym 'a') :: (Pm Str Char)
+
+tom' = ((\a b -> [a, b]) <$> (sym 'a' <|> sym 'c') <*> sym 'b') :: (Pm Str [Char])
 
 -- Classes --
-
-class ParserFuns p where
-    (<.>) :: p (b -> a) -> p b -> p a
-    (<!>) :: p a -> p a -> p a
-    (<@>) :: (b -> a) -> p b -> p a
-    result :: a -> p a
-    epsilon :: p a
-    f <@> p = result f <.> p
 
 class symbol `Describes` token where
     eqSymTok :: symbol -> token -> Bool
@@ -57,6 +51,7 @@ data Steps a where
     Step :: Steps a -> Steps a
     Fail :: Steps a
     Apply :: (b -> a) -> Steps b -> Steps a
+    Success :: Steps a -> Steps a
 
 stepsDone :: a -> Steps a
 stepsDone a = Apply (const a) Fail
@@ -79,21 +74,16 @@ l `best` r = norm l `best'` norm r
           (Step l)  `best'` (Step r) = Step (l `best` r)
           _         `best'` _        = Fail -- Ambiguous
 
+class Greedy p where
+    (<<|>) :: p a -> p a -> p a
+
+best_gr :: Steps a -> Steps a -> Steps a
+l@(Step _) `best_gr` _ = l
+l `best_gr` r = l `best` r
+
 -- Recognizer --
 
 newtype R st a = R (forall r. (st -> Steps r) -> st -> Steps r)
-
-instance ParserFuns (R st) where
-    -- (<.>) :: R st (a -> b) -> R st a -> R st b
-    (R r1) <.> (R r2) = R (\k st -> r1 (r2 k) st)
-    --(<!>) :: R st a -> R st b -> R st a
-    (R r1) <!> (R r2) = R (\k st -> r1 k st `best` r2 k st)
-    --(<@>) :: (b -> a) -> R st b -> R st a
-    f <@> (R r) = R r
-    -- result :: a -> R st a     
-    result v = R (\k st -> k st)
-    -- epsilon :: R st a
-    epsilon = R (\k st -> Fail)
 
 instance ((symbol `Describes` token), (Provides state symbol token))
     => Symbol (R state) symbol token where
@@ -109,17 +99,26 @@ newtype Ph st a = Ph (forall r. (a -> st -> Steps r) -> st -> Steps r)
 
 unPh (Ph p) = p
 
-instance ParserFuns (Ph st) where
-    -- (<.>) :: Ph st (a -> b) -> Ph st a -> Ph st b
-    (Ph p) <.> (Ph q) = Ph (\k -> p (\f -> q (\a -> k (f a)))) 
-    --(<!>) :: Ph st a -> Ph st b -> Ph st a
-    (Ph p1) <!> (Ph p2) = Ph (\k inp -> p1 k inp `best` p2 k inp)
-    --(<@>) :: (b -> a) -> Ph st b -> Ph st a
-    f <@> (Ph p) = Ph (\k -> p (\a -> k (f a)))
-    -- result :: a -> Ph st a
-    result a = Ph (\k -> k a)
-    -- epsilon :: Ph st a
-    epsilon = Ph (\k -> const Fail)
+instance Applicative (Ph st) where
+    -- (<*>) :: Ph st (a -> b) -> Ph st a -> Ph st b
+    (Ph p) <*> (Ph q) = Ph (\k -> p (\f -> q (\a -> k (f a))))
+    -- return --
+    pure = return
+
+instance Functor (Ph st) where
+    --(<$>) :: (b -> a) -> Ph st b -> Ph st a
+    f `fmap` (Ph p) = Ph (\k -> p (\a -> k (f a)))
+
+instance Monad (Ph st) where
+    (Ph p) >>= a2q = Ph (\k -> p (\a -> unPh (a2q a) k))       
+    -- return :: a -> Ph st a
+    return r = Ph (\k -> k r)
+
+instance Alternative (Ph st) where
+    --(<|>) :: Ph st a -> Ph st b -> Ph st a
+    (Ph p1) <|> (Ph p2) = Ph (\k inp -> p1 k inp `best` p2 k inp)    
+    -- empty :: Ph st a
+    empty = Ph (\k -> const Fail)
 
 instance ((symbol `Describes` token), (Provides state symbol token))
     => Symbol (Ph state) symbol token where
@@ -135,16 +134,8 @@ instance Eof state => ParserClass Ph state where
                                                 then stepsDone r 
                                                 else Fail)) st
 
-instance Functor (Ph state) where
-    fmap = liftM
-
-instance Applicative (Ph state) where
-    pure = return
-    (<*>) = ap
-    
-instance Monad (Ph state) where
-    (Ph p) >>= a2q = Ph (\k -> p (\a -> unPh (a2q a) k))
-    return = result
+instance Greedy (Ph st) where
+    Ph p <<|> Ph q = Ph (\k st -> p k st `best_gr` q k st)
 
 -- Future parser --
 
@@ -152,21 +143,36 @@ newtype Pf st a = Pf (forall r. (st -> Steps r) -> st -> Steps (a, r))
 
 unPf (Pf p) = p
 
+instance Applicative (Pf st) where
+    -- (<*>) :: Pf st (a -> b) -> Pf st a -> Pf st b
+    (Pf p) <*> (Pf q) = Pf (\k st -> applyf (p (q k) st))
+    -- return --
+    pure = return
+
+instance Functor (Pf st) where
+    --(<@>) :: (b -> a) -> Ph st b -> Ph st a
+    f `fmap` p = return f <*> p
+
+instance Monad (Pf st) where
+    (Pf p) >>= pv2q = Pf (\k st ->
+                        let steps = p (q k) st
+                            q = unPf (pv2q pv)
+                            pv = fst (eval steps)
+                        in Apply snd steps)  
+    -- return :: a -> Pf st a
+    return a = Pf (\k st -> push a (k st))
+
+instance Alternative (Pf st) where
+    --(<|>) :: Pf st a -> Pf st b -> Pf st a
+    (Pf p1) <|> (Pf p2) = Pf (\k st -> p1 k st `best` p2 k st)
+    -- empty :: Pf st a
+    empty = Pf (\_ -> const Fail)
+
 push :: v -> Steps r -> Steps (v, r)
 push v = Apply (\s -> (v, s))
 
 applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
 applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r))
-
-instance ParserFuns (Pf st) where
-    -- (<.>) :: Pf st (a -> b) -> Pf st a -> Pf st b
-    (Pf p) <.> (Pf q) = Pf (\k st -> applyf (p (q k) st)) 
-    --(<!>) :: Pf st a -> Pf st b -> Pf st a
-    (Pf p1) <!> (Pf p2) = Pf (\k st -> p1 k st `best` p2 k st)
-    -- result :: a -> Pf st a
-    result a = Pf (\k st -> push a (k st))
-    -- epsilon :: Pf st a
-    epsilon = Pf (\_ -> const Fail)
 
 instance ((symbol `Describes` token), (Provides state symbol token))
     => Symbol (Pf state) symbol token where
@@ -182,20 +188,8 @@ instance Eof state => ParserClass Pf state where
                                                 then undefined 
                                                 else error "end")) st
 
-instance Functor (Pf state) where
-    fmap = liftM
-
-instance Applicative (Pf state) where
-    pure = return
-    (<*>) = ap
-
-instance Monad (Pf state) where
-    (Pf p) >>= pv2q = Pf (\k st ->
-                            let steps = p (q k) st
-                                q = unPf (pv2q pv)
-                                pv = fst (eval steps)
-                            in Apply snd steps)
-    return = result
+instance Greedy (Pf st) where
+    Pf p <<|> Pf q = Pf (\k st -> p k st `best_gr` q k st)
 
 -- Monadic parser --
 
@@ -204,11 +198,28 @@ data Pm state a = Pm (Ph state a) (Pf state a)
 unPm_h (Pm (Ph h) _) = h
 unPm_f (Pm _ (Pf f)) = f
 
-instance ParserFuns (Pm st) where
-    (Pm hp fp) <.> ~(Pm hq fq) = Pm (hp <.> hq) (fp <.> fq)
-    (Pm hp fp) <!> (Pm hq fq) = Pm (hp <!> hq) (fp <!> fq)
-    result a = Pm (result a) (result a)
-    epsilon = Pm epsilon epsilon
+instance Applicative (Pm st) where
+    -- (<*>) :: Pm st (a -> b) -> Pm st a -> Pm st b
+    (Pm hp fp) <*> ~(Pm hq fq) = Pm (hp <*> hq) (fp <*> fq)
+    -- return --
+    pure = return
+
+instance Functor (Pm st) where
+    --(<@>) :: (b -> a) -> Pm st b -> Pm st a
+    f `fmap` p = return f <*> p
+
+instance Monad (Pm st) where
+    (Pm (Ph p) _) >>= a2q = Pm 
+        (Ph (\k -> p (\a -> unPm_h (a2q a) k)))
+        (Pf (\k -> p (\a -> unPm_f (a2q a) k)))
+    -- return :: a -> Pm st a
+    return a = Pm (return a) (return a)
+
+instance Alternative (Pm st) where
+    --(<|>) :: Pm st a -> Pm st b -> Pm st a
+    (Pm hp fp) <|> (Pm hq fq) = Pm (hp <|> hq) (fp <|> fq)
+    -- empty :: Pm st a
+    empty = Pm empty empty
 
 instance ((symbol `Describes` token), (Provides state symbol token))
     => Symbol (Pm state) symbol token where
@@ -219,19 +230,8 @@ instance Eof state => ParserClass Pm state where
                                                         then undefined
                                                         else error "parse")
 
-instance Functor (Pm state) where
-    fmap = liftM
-
-instance Applicative (Pm state) where
-    pure = return
-    (<*>) = ap
-
-instance Monad (Pm state) where
-    (Pm (Ph p) _) >>= a2q = Pm 
-        (Ph (\k -> p (\a -> unPm_h (a2q a) k)))
-        (Pf (\k -> p (\a -> unPm_f (a2q a) k)))
-        
-    return = result
+instance Greedy (Pm st) where
+    Pm ph pf <<|> Pm qh qf = Pm (ph <<|> qh) (pf <<|> qf)
 
 -- Parser definition --
 
