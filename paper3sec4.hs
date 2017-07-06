@@ -23,6 +23,11 @@ instance Provides Str Char Char where
     splitState _ (Str [] _) = Nothing
     splitState _ (Str (t:ts) pos) = Just (pos + 1, t, Str ts (pos + 1))
 
+instance Provides Str String Char where
+    splitState "" _ = Nothing
+    splitState _ (Str [] _) = Nothing
+    splitState _ (Str (t:ts) pos) = Just (pos + 1, t, Str ts (pos + 1))    
+
 instance Eof Str where
     eof (Str l _) = null l
 
@@ -33,6 +38,8 @@ symas = ((\a -> [a]) <$> syma) :: (Pm Str String)
 symb = (sym 'b') :: (Pm Str Char)
 
 tom' = ((\a b -> [a, b]) <$> (sym 'a' <|> sym 'c') <*> sym 'b') :: (Pm Str [Char])
+
+empty' = empty :: Pm Str Char
 
 -- tom'' = ((foldr (:) []) <$> many (sym 'a')) :: (Pm Str String)
 
@@ -117,8 +124,9 @@ class Greedy p where
     (<<|>) :: p a -> p a -> p a
 
 best_gr :: Steps a -> Steps a -> Steps a
-l@(Step _ _) `best_gr` _ = l
-l `best_gr` r = l `best` r
+l `best_gr` r = norm l `best_gr'` norm r
+   where  l@(Step _ _) `best_gr'` _ = l
+          l `best_gr'` r = l `best` r
 
 class Ambiguous p where
     amb :: p a -> p [a]
@@ -453,10 +461,10 @@ p `opt` v = p <<|> return v
 --     -- Iteration --
 
 many :: Pm s a -> Pm s [a]
-many p = p <:*> many p `opt` []
+many p = p <:*> many p <<|> empty
 
 many1 :: Pm s a -> Pm s [a]
-many1 p = p <:*> many p
+many1 p = (\xs x -> xs ++ [x]) <$> many p <*> p
 
 chainl :: Pm s (a -> a -> a) -> Pm s a -> Pm s a
 chainl op p = applyAll <$> p <*> many (flip <$> op <*> p) 
