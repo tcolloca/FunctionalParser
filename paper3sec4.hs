@@ -1,5 +1,5 @@
 {-# LANGUAGE TransformListComp, MonadComprehensions, TupleSections, FunctionalDependencies, GADTs,
-ExistentialQuantification, Rank2Types, TypeOperators, FlexibleInstances, FlexibleContexts #-}
+AllowAmbiguousTypes, ExistentialQuantification, Rank2Types, TypeOperators, FlexibleInstances, FlexibleContexts #-}
 
 import Data.Char (isSpace, isLetter, isAlphaNum)
 import Control.Monad (MonadPlus(..), ap, liftM)
@@ -7,64 +7,89 @@ import Control.Applicative hiding ((*>), (<*), many, (<**>), (<$))
 import Data.Functor hiding ((<$))
 import Prelude hiding ((<$), (<*), (*>))
 
-infixr 3 `opt`
+infixl 5 <**>, <:*>
+infixr 3 <<|>, <<<|>, `opt`
 
 -- test --
 
-data Str = Str {input :: String, pos :: Int}
+data Str t = Str {input :: [t],
+                  msgs :: [Error t t Int],
+                  pos :: !Int,
+                  deleteOk :: !Bool } 
 
-listToStr :: String -> Str
-listToStr ls = Str ls 0   
+listToStr :: String -> Str Char
+listToStr ls = Str ls [] 0 True  
 
-instance Describes Char Char where
-    eqSymTok sym tok = sym == tok
+instance  Eq a => Describes a a where
+    eqSymTok = (==)
 
-instance Provides Str Char Char where
-    splitState _ (Str [] _) = Nothing
-    splitState _ (Str (t:ts) pos) = Just (pos + 1, t, Str ts (pos + 1))
+data Error t s pos = Inserted s pos String
+                    | Deleted t pos String
+                    | DeletedAtEnd t
+        deriving Show
 
-instance Provides Str String Char where
-    splitState "" _ = Nothing
-    splitState _ (Str [] _) = Nothing
-    splitState _ (Str (t:ts) pos) = Just (pos + 1, t, Str ts (pos + 1))    
+instance Provides (Str a) a a where
+    splitState _ (Str [] _ _ _) = Nothing
+    splitState _ (Str (t:ts) msgs pos ok) = Just (pos + 1, t, Str ts msgs (pos + 1) True)
 
-instance Eof Str where
-    eof (Str l _) = null l
+-- instance Provides Str  String Char where
+--     splitState "" _ = Nothing
+--     splitState _ (Str [] _) = Nothing
+--     splitState _ (Str (t:ts) pos) = Just (pos + 1, t, Str ts (pos + 1))    
 
-syma = (sym 'a') :: (Pm Str Char)
+instance Eof (Str a) where
+    eof (Str l _ _ _) = null l
+    deleteAtEnd (Str (x:xs) msgs pos ok) = Just (5, Str xs (msgs ++ [DeletedAtEnd x]) pos ok)
+    deleteAtEnd _ = Nothing 
 
-symas = ((\a -> [a]) <$> syma) :: (Pm Str String)
+instance Corrects (Str a) a a where
+    insertSym s (Str i msgs pos ok) exp = Just (5, s, Str i (msgs ++ [Inserted s pos exp]) pos False)
+    deleteTok i (Str ii _ pos True) (Str _ msgs pos' True) exp = Just (5, Str ii (msgs ++ [Deleted i pos' exp]) pos True)
+    deleteTok _ _ _ _ = Nothing
 
-symb = (sym 'b') :: (Pm Str Char)
+instance Stores (Str a) [Error a a Int] where
+    getErrors (Str inp msgs pos ok) = (msgs, Str inp [] pos ok)
 
-tom' = ((\a b -> [a, b]) <$> (sym 'a' <|> sym 'c') <*> sym 'b') :: (Pm Str [Char])
+syma = (sym 'a') :: (Pm (Str Char) Char)
 
-empty' = empty :: Pm Str Char
+symas = ((\a -> [a]) <$> syma) :: (Pm (Str Char) String)
 
--- tom'' = ((foldr (:) []) <$> many (sym 'a')) :: (Pm Str String)
+symb = (sym 'b') :: (Pm (Str Char) Char)
 
--- test2 --
+symbs = ((\a -> [a]) <$> symb) :: (Pm (Str Char) String)
 
-data Str2 = Str2 {input2 :: String, pos2 :: Int}
+tom' = ((\a b -> [a, b]) <$> (sym 'a' <|> sym 'c') <*> sym 'b') :: (Pm (Str Char) [Char])
 
-listToStr2 :: String -> Str2
-listToStr2 ls = Str2 ls 0
+empty' = empty :: Pm (Str Char) Char
+
+tom'' = ((foldr (:) []) <$> many (sym 'a')) :: (Pm (Str Char) String)
+
+ -- test2 --
+
+-- data Str2 t = Str {input2 :: [t],
+--                   msgs2 :: [Error t t Int],
+--                   pos2 :: !Int,
+--                   deleteOk2 :: !Bool } 
+
+-- listToStr2 :: String -> Str2 Char
+-- listToStr2 ls = Str2 ls [] 0 True
 
 instance Describes Char Int where
     eqSymTok c n = fromEnum c - fromEnum '0' == n 
 
-instance Provides Str2 Char Int where
-    splitState _ (Str2 [] _) = Nothing
-    splitState _ (Str2 (t:ts) pos) = Just (pos + 1, fromEnum t - fromEnum '0', Str2 ts (pos + 1))
+-- instance Provides (Str2 Char) Char Int where
+--     splitState _ (Str2 [] _) = Nothing
+--     splitState _ (Str2 (t:ts) pos) = Just (pos + 1, fromEnum t - fromEnum '0', Str2 ts (pos + 1))
 
-instance Eof Str2 where
-    eof (Str2 l _) = null l
+-- instance Eof Str2 where
+--     eof (Str2 l _) = null l
 
-tomNum = (sym '0') :: (Pm Str2 Int)
+-- tomNum = (sym '0') :: (Pm Str2 Int)
 
 -- Classes --
 
 type Progress = Int
+type Cost = Int
 
 class symbol `Describes` token where
     eqSymTok :: symbol -> token -> Bool
@@ -73,52 +98,66 @@ class Symbol p symbol token where
     sym :: symbol -> p token
 
 -- state symbol Provides token
-class Provides state symbol token | state symbol -> token where
+class Corrects state symbol token => Provides state symbol token | state symbol -> token where
     splitState :: symbol -> state -> Maybe (Progress, token, state)
+
+class Corrects state symbol token where
+    insertSym :: symbol -> state -> String -> Maybe (Cost, token, state)
+    deleteTok :: token -> state -> state -> String -> Maybe (Cost, state)
 
 class Eof state where
     eof :: state -> Bool
+    deleteAtEnd :: state -> Maybe (Cost, state) 
+
 
 class ParserClass p state where
     parse :: p state a -> state -> a
 
 data Steps a where
     Step :: Progress -> Steps a -> Steps a
-    Fail :: Steps a
+    Fail :: [String] -> Steps a
     Done :: a -> Steps a
     Apply :: (b -> a) -> Steps b -> Steps a
     Success :: Steps a -> Steps a
-    Endh :: ([a], [a] -> Steps r) -> Steps (a, r) -> Steps (a, r)
-    Endf :: [Steps a] -> Steps a -> Steps a
+    -- Endh :: ([a], [a] -> Steps r) -> Steps (a, r) -> Steps (a, r)
+    -- Endf :: [Steps a] -> Steps a -> Steps a
     Micro :: Steps a -> Steps a
 
 eval :: Steps a -> a
 eval (Done a) = a
 eval (Apply f v) = f (eval v)
 eval (Step _ l) = eval l
-eval Fail = error "should not happen"
+eval (Success s) = eval s
+eval (Fail l) = error (concat l)
 
 norm :: Steps a -> Steps a 
 norm (Apply f (Apply g l)) = norm (Apply (f . g) l)
 norm (Apply f (Step n l)) = Step n (Apply f l)
-norm (Apply f Fail) = Fail
+norm (Apply f (Fail m)) = Fail m
+norm (Apply f (Success l)) = Success (Apply f l)
+norm (Apply f (Micro l)) = Micro (Apply f l)
+-- norm (Apply f (Endf as l)) = Endf (map (Apply f) as) (Apply f l)
 norm steps = steps
 
 best :: Steps a -> Steps a -> Steps a
 l `best` r = norm l `best'` norm r
-    where Fail      `best'` r        = r
-          l         `best'` Fail     = l
+    where Fail l `best'` Fail r = Fail (l ++ r)
+          Fail _      `best'` r        = r
+          l         `best'` Fail _    = l
           (Step n l)  `best'` (Step m r)
                         | n == m = Step n (l `best` r)
                         | n < m = Step n (l `best` Step (m - n) r)
                         | n > m = Step m (Step (n - m) l `best` r)
-          Endh (as, k_st) l `best'` Endh (bs, _) r = Endh (as ++ bs, k_st) (l `best` r)
-          Endh as l `best'` r = Endh as (l `best` r)
-          l `best'` Endh bs r = Endh bs (l `best` r)
+          -- Endh (as, k_st) l `best'` Endh (bs, _) r = Endh (as ++ bs, k_st) (l `best` r)
+          -- Endh as l `best'` r = Endh as (l `best` r)
+          -- l `best'` Endh bs r = Endh bs (l `best` r)
+          -- Endf as l `best'` Endf bs r = Endf (as ++ bs) (l `best` r)
+          -- Endf as l `best'` r = Endf as (l `best` r)
+          -- l `best'` Endf bs r = Endf bs (l `best` r)
           (Micro l) `best'` r@(Step _ _) = r
           l@(Step _ _) `best'` (Micro _) = l
           (Micro l) `best'` (Micro r) = Micro (l `best` r)
-          _         `best'` _        = Fail -- Ambiguous
+          _         `best'` _        = Fail ["ambiguous"] -- Ambiguous
 
 class Greedy p where
     (<<|>) :: p a -> p a -> p a
@@ -131,6 +170,10 @@ l `best_gr` r = norm l `best_gr'` norm r
 class Ambiguous p where
     amb :: p a -> p [a]
 
+class Try p where
+    (<<<|>) :: p a -> p a -> p a
+    try :: p a -> p a
+
 class Micro p where
     micro :: p a -> p a
 
@@ -141,6 +184,13 @@ class ExtApplicative p st where
     (<*) :: p a -> R st b -> p a
     (*>) :: R st b -> p a -> p a
     (<$) :: a -> R st b -> p a
+
+class p `AsksFor` errors where
+    pErrors :: p errors
+    pEnd :: p errors
+
+class state `Stores` errors where
+    getErrors :: state -> (errors, state)
 
 -- Recognizer --
 
@@ -168,15 +218,15 @@ instance Alternative (R st) where
     --(<|>) :: R st a -> R st b -> R st a
     (R r1) <|> (R r2) = R (\k inp -> r1 k inp `best` r2 k inp)    
     -- empty :: R st a
-    empty = R (\k st -> Fail)
+    empty = R (\k st -> Fail ["empty"])
 
-instance ((symbol `Describes` token), (Provides state symbol token))
+instance (Show symbol, (symbol `Describes` token), (Provides state symbol token))
     => Symbol (R state) symbol token where
     sym a = R (\k st -> case splitState a st of
                             Just (n, t, ss) -> if a `eqSymTok` t
                                                 then Step n (k ss)
-                                                else Fail
-                            Nothing -> Fail) 
+                                                else Fail [show a]
+                            Nothing -> Fail [show a]) 
 
 -- History parser --
 
@@ -203,37 +253,43 @@ instance Alternative (Ph st) where
     --(<|>) :: Ph st a -> Ph st b -> Ph st a
     (Ph p1) <|> (Ph p2) = Ph (\k inp -> p1 k inp `best` p2 k inp)    
     -- empty :: Ph st a
-    empty = Ph (\k -> const Fail)
+    empty = Ph (\k -> const (Fail ["empty"]))
 
-instance ((symbol `Describes` token), (Provides state symbol token))
+instance (Show symbol, (symbol `Describes` token), (Provides state symbol token))
     => Symbol (Ph state) symbol token where
         -- symbol -> p token
         sym a = Ph (\k st -> case splitState a st of
                                 Just (n, t, ss) -> if eqSymTok a t 
                                                     then Step n (k t ss)
-                                                    else Fail
-                                Nothing -> Fail)
+                                                    else Fail [show a]
+                                Nothing -> Fail [show a])
 
 instance Eof state => ParserClass Ph state where
     parse (Ph p) st = (eval . p (\r rest -> if eof rest
                                                 then Done r 
-                                                else Fail)) st
+                                                else Fail ["eof"])) st
 
 instance Greedy (Ph st) where
     Ph p <<|> Ph q = Ph (\k st -> p k st `best_gr` q k st)
 
-instance Ambiguous (Ph state) where
-    amb (Ph p) = Ph (\k -> removeEndh . p (\a st' -> Endh ([a], \as -> k as st') Fail))
+instance Try (Ph state) where
+    Ph p <<<|> Ph q = Ph (\k st -> let l = p k st
+                                   in maybe (l `best` q k st) id (hasSuccess id l)
+                         )
+    try (Ph p) = Ph (p . (((Success .) .)))
 
-removeEndh :: Steps (a, r) -> Steps r
-removeEndh Fail = Fail
-removeEndh (Step n l) = Step n (removeEndh l)
-removeEndh (Done (a, r)) = Done r
-removeEndh (Apply f l) = error "no apply in history"
-removeEndh (Endh (as, k_st) r) = k_st as `best` removeEndh r
+-- instance Ambiguous (Ph state) where
+--     amb (Ph p) = Ph (\k -> removeEndh . p (\a st' -> Endh ([a], \as -> k as st') Fail))
+
+-- removeEndh :: Steps (a, r) -> Steps r
+-- removeEndh Fail = Fail
+-- removeEndh (Step n l) = Step n (removeEndh l)
+-- removeEndh (Done (a, r)) = Done r
+-- removeEndh (Apply f l) = error "no apply in history"
+-- removeEndh (Endh (as, k_st) r) = k_st as `best` removeEndh r
 
 instance Micro (Ph state) where
-    micro (Ph p) = Ph ((Micro .) . p) -- TODO: Review
+    micro (Ph p) = Ph (p . (((Micro .) .)))
 
 instance Switch Ph where
     switch split (Ph p) = Ph (\k st1 -> let (st2, st2tost1) = split st1
@@ -273,7 +329,7 @@ instance Alternative (Pf st) where
     --(<|>) :: Pf st a -> Pf st b -> Pf st a
     (Pf p1) <|> (Pf p2) = Pf (\k st -> p1 k st `best` p2 k st)
     -- empty :: Pf st a
-    empty = Pf (\_ -> const Fail)
+    empty = Pf (\_ -> const (Fail ["empty"]))
 
 push :: v -> Steps r -> Steps (v, r)
 push v = Apply (\s -> (v, s))
@@ -281,14 +337,14 @@ push v = Apply (\s -> (v, s))
 applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
 applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r))
 
-instance ((symbol `Describes` token), (Provides state symbol token))
+instance (Show symbol, (symbol `Describes` token), (Provides state symbol token))
     => Symbol (Pf state) symbol token where
         -- symbol -> p token
         sym a = Pf (\k st -> case splitState a st of
                                 Just (n, t, ss) -> if eqSymTok a t 
                                                     then Step n (push t (k ss))
-                                                    else Fail
-                                Nothing -> Fail)
+                                                    else Fail [show a]
+                                Nothing -> Fail [show a])
 
 instance Eof state => ParserClass Pf state where
     parse (Pf p) st = (fst . eval . p (\st -> if eof st
@@ -298,22 +354,31 @@ instance Eof state => ParserClass Pf state where
 instance Greedy (Pf st) where
     Pf p <<|> Pf q = Pf (\k st -> p k st `best_gr` q k st)
 
-(<++>) :: Pf st [a] -> Pf st [a] -> Pf st [a]
-p <++> q = (++) <$> p <*> q
+instance Try (Pf state) where
+    Pf p <<<|> Pf q = Pf (\k st -> let l = p k st
+                                   in maybe (l `best` q k st) id (hasSuccess id l)
+                         )
+    try (Pf p) = Pf (p . (Success .))
 
-instance Ambiguous (Pf state) where
-    amb (Pf p) = Pf (\k inp -> combineValues . removeEndf $ p (\st -> Endf [k st] Fail) inp)
+hasSuccess :: (Steps a -> b) -> Steps a -> Maybe b
+hasSuccess f (Step n l) = hasSuccess (f . Step n) l
+hasSuccess f (Apply g l) = hasSuccess (f . (Apply g)) l
+hasSuccess f (Success l) = Just (f l)
+hasSuccess f (Fail _) = Nothing
 
-removeEndf :: Steps r -> Steps [r]
-removeEndf Fail = Fail
-removeEndf (Step n l) = Step n (removeEndf l)
-removeEndf (Apply f l) = Apply (map' f) (removeEndf l)
-removeEndf (Endf (s:ss) r) = Apply (:(map eval ss)) s `best` removeEndf r
+-- instance Ambiguous (Pf state) where
+--     amb (Pf p) = Pf (\k inp -> combineValues . removeEndf $ p (\st -> Endf [k st] Fail) inp)
 
-combineValues :: Steps[(a, r)] -> Steps ([a], r)
-combineValues lar = Apply (\lar' -> (map fst lar', snd (head lar'))) lar
+-- removeEndf :: Steps r -> Steps [r]
+-- removeEndf Fail = Fail
+-- removeEndf (Step n l) = Step n (removeEndf l)
+-- removeEndf (Apply f l) = Apply (map' f) (removeEndf l)
+-- removeEndf (Endf (s:ss) r) = Apply (:(map eval ss)) s `best` removeEndf r
 
-map' f ~(x:xs) = f x : map f xs
+-- combineValues :: Steps[(a, r)] -> Steps ([a], r)
+-- combineValues lar = Apply (\lar' -> (map fst lar', snd (head lar'))) lar
+
+-- map' f ~(x:xs) = f x : map f xs
 
 instance Micro (Pf state) where
     micro (Pf p) = Pf (p . (Micro .))
@@ -326,6 +391,17 @@ instance ExtApplicative (Pf st) st where
     Pf p <* R r = Pf (p . r)
     R r *> Pf p = Pf (r . p)
     f <$ R r = Pf (((push f) .) . r)
+
+instance (Eof state, Stores state errors) => AsksFor (Pf state) errors where
+    pErrors = Pf (\k inp -> let (errs, inp') = getErrors inp
+                            in push errs (k inp')) 
+
+    pEnd = Pf (\k inp -> let del inp = case deleteAtEnd inp of
+                                         Nothing -> let (errors, state) = getErrors inp
+                                                    in push errors (k state)
+                                         Just (i, inp') -> Fail []
+                          in del inp
+              )
 
 -- Monadic parser --
 
@@ -357,7 +433,7 @@ instance Alternative (Pm st) where
     -- empty :: Pm st a
     empty = Pm empty empty
 
-instance ((symbol `Describes` token), (Provides state symbol token))
+instance (Show symbol, (symbol `Describes` token), (Provides state symbol token))
     => Symbol (Pm state) symbol token where
     sym a = Pm (sym a) (sym a)
 
@@ -369,8 +445,12 @@ instance Eof state => ParserClass Pm state where
 instance Greedy (Pm st) where
     Pm ph pf <<|> Pm qh qf = Pm (ph <<|> qh) (pf <<|> qf)
 
-instance Ambiguous (Pm st) where
-    amb (Pm ph pf) = Pm (amb ph) (amb pf) 
+instance Try (Pm state) where
+    Pm ph pf <<<|> Pm qh qf = Pm (ph <<<|> qh) (pf <<<|> qf)
+    try (Pm ph pf) = Pm (try ph) (try pf)
+
+-- instance Ambiguous (Pm st) where
+--     amb (Pm ph pf) = Pm (amb ph) (amb pf) 
 
 instance Micro (Pm state) where
     micro (Pm ph pf) = Pm (micro ph) (micro pf)
@@ -432,11 +512,11 @@ instance ExtApplicative (Pm st) st where
 
 -- Basic parsers --
 
-token :: (Describes b a, Provides st b a) => [b] -> Pm st [a]
+token :: (Show b, Describes b a, Provides st b a) => [b] -> Pm st [a]
 token (x:xs) = sym x <:*> token xs
 token [] = return []
 
-r_token :: (Describes b a, Provides st b a) => [b] -> R st [a]
+r_token :: (Show b, Describes b a, Provides st b a) => [b] -> R st [a]
 r_token (x:xs) = sym x <:*> r_token xs
 r_token [] = return []
 
@@ -453,18 +533,21 @@ p <:*> ps = (:) <$> p <*> ps
 (<??>) :: Pm s a -> Pm s (a -> a) -> Pm s a
 p1 <??> p2 = p1 <**> (p2 `opt` id)
 
+(<++>) :: Pm st [a] -> Pm st [a] -> Pm st [a]
+p <++> q = (++) <$> p <*> q
+
     -- Choice / Branching --
 
 opt :: Pm s a -> a -> Pm s a
-p `opt` v = p <<|> return v
+p `opt` v = try (p <<<|> return v)
 
 --     -- Iteration --
 
 many :: Pm s a -> Pm s [a]
-many p = p <:*> many p <<|> empty
+many p = p <:*> many p `opt` []
 
 many1 :: Pm s a -> Pm s [a]
-many1 p = (\xs x -> xs ++ [x]) <$> many p <*> p
+many1 p = p <:*> many p
 
 chainl :: Pm s (a -> a -> a) -> Pm s a -> Pm s a
 chainl op p = applyAll <$> p <*> many (flip <$> op <*> p) 
@@ -473,7 +556,7 @@ chainr :: Pm s (a -> a -> a) -> Pm s a -> Pm s a
 chainr op p = r where r = p <??> (flip <$> op <*> r)
 
 choice :: [Pm s a] -> Pm s a
-choice = foldr (<|>) empty
+choice ps = try (foldr (<<<|>) (empty) ps)
 
 seqnc :: [Pm s a] -> Pm s [a]
 seqnc (p:ps) = p <:*> seqnc ps
@@ -481,7 +564,7 @@ seqnc [] = return []
 
     -- Packing --
 
-pack :: (Describes b a0, Provides st b a0, Describes b a) => [b] -> Pm st a -> [b] -> Pm st a
+pack :: (Show b, Describes b a0, Provides st b a0, Describes b a) => [b] -> Pm st a -> [b] -> Pm st a
 pack open p close = pack' (r_token open) p (r_token close)
 
 pack' :: R st b -> Pm st a -> R st b -> Pm st a
@@ -524,13 +607,13 @@ integer = integer' (r_token "-")
 integer' :: (Provides st Char Int) => R st a -> Pm st Int
 integer' negTok = (negate <$ negTok `opt` id) <*> natural
 
-op :: (Describes s a0, Provides st s a0) => (a -> b -> c, [s]) -> Pm st (a -> b -> c)
+op :: (Show s, Describes s a0, Provides st s a0) => (a -> b -> c, [s]) -> Pm st (a -> b -> c)
 op (semantic, s) = op' semantic (r_token s)
 
 op' :: (a -> b -> c) -> R st d -> Pm st (a -> b -> c)
 op' semantic op_reader = semantic <$ op_reader
 
-anyOp :: (Describes s a0, Provides st s a0) => [(a -> b -> c, [s])] -> Pm st (a -> b -> c)
+anyOp :: (Show s, Describes s a0, Provides st s a0) => [(a -> b -> c, [s])] -> Pm st (a -> b -> c)
 anyOp = choice . (map op)
 
 addSubtrOps :: (Describes Char a0, Provides st Char a0) => Pm st (Int -> Int -> Int)
@@ -540,13 +623,13 @@ multDivOps :: (Describes Char a0, Provides st Char a0) => Pm st (Int -> Int -> I
 multDivOps = anyOp [((*), "*")]
 
 numFactor :: (Provides st Char Int) => Pm st Int
-numFactor = integer <|> (parens numExpr)
+numFactor = try ((parens numExpr) <<<|> integer)
 
 numExpr :: (Provides st Char Int) => Pm st Int
 numExpr = foldr chainl numFactor [addSubtrOps, multDivOps]
 
 expr :: (Provides st Char Int) => Pm st Int
-expr = numExpr <|> numIfElse
+expr = try (numExpr <<<|> numIfElse)
 
 -- Conditionals --
 
@@ -556,9 +639,9 @@ numIfElse = numIfElse' (r_token "if") (r_token "else")
 numIfElse' :: (Provides st Char Int) => R st a -> R st b -> Pm st Int
 numIfElse' if_r else_r = (\bool a b -> if toBool bool then a else b) <$ 
        if_r <*> parens numBoolExpr <*> 
-            expr <* 
+            curly expr <* 
        else_r <*> 
-            expr   
+            curly expr   
 
 numAndOps :: (Describes Char a0, Provides st Char a0) => Pm st (Int -> Int -> Int)
 numAndOps = anyOp (map (min,) ["&&", "and"])
@@ -583,10 +666,10 @@ toBool 1 = True
 toBool 0 = False
 
 numRelExpr :: (Provides st Char Int) => Pm st Int
-numRelExpr = 
-    const (toInt False) <$> token "false" <|>
-    const (toInt True) <$> token "true" <|>
-    expr <**> numRelOps <*> expr 
+numRelExpr = try (
+    const (toInt False) <$> token "false" <<<|>
+    const (toInt True) <$> token "true" <<<|>
+    expr <**> numRelOps <*> expr)
 
 -- Utils --
 
