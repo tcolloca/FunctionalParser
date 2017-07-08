@@ -21,10 +21,6 @@ infixr  4  <:*>
 
 -- TODO: Infixes
 
--- TODO: Alternative, Applicative, MonadPlus 
-
--- TODO: Was ExtAlternative with more methods
-
 -- %%%%% TYPE SYNONYMS %%%%% --
 
 type Cost     = Int
@@ -37,10 +33,10 @@ data Steps a where
     Step    :: Progress  -> Steps a                            -> Steps a
     Fail    :: Strings   -> [Strings -> Maybe (Cost, Steps a)] -> Steps a
     Apply   :: (b -> a)  -> Steps b                            -> Steps a
-    Success :: Steps a                                         -> Steps a -- TODO: Doesn't go
+    Success :: Steps a                                         -> Steps a
     Endh    :: ([a], [a] -> Steps r) -> Steps (a, r)           -> Steps (a, r)
     Endf    :: [Steps a] -> Steps a  -> Steps a
-    Micro   :: Steps a                                         -> Steps a -- TODO: Has cost
+    Micro   :: Steps a                                         -> Steps a
 
 -- %%%%%%%% INTERFACES %%%%%%%% --
 
@@ -57,13 +53,6 @@ class Provides state symbol token | state symbol -> token where
 
 class Eof state where
     eof         :: state  -> Bool
-    deleteAtEnd :: state  -> Maybe (Cost, state) 
-
- -- TODO: Show
-
--- TODO: errors was [errors]
-class state `Stores` errors where
-    getErrors :: state  -> (errors, state)
 
 --     &&& PARSER RELATED &&&   --
 
@@ -93,8 +82,6 @@ class Micro p where
 
 class Switch p where
     switch :: (st1 -> (st2, st2 -> st1)) -> p st2 a -> p st1 a
-
--- TODO: HasPosition
 
 
 -- %%%%% PARSER DEFINITIONS %%%%% --
@@ -143,11 +130,11 @@ instance Functor (Pr st) where
 
 instance Functor (Ph st) where
     --(<$>) :: (b -> a) -> Ph st b -> Ph st a
-    f `fmap` (Ph p) = Ph (\ k -> p (\ a -> k (f a))) -- TODO: \  k -> ph ( k .f )
+    f `fmap` (Ph p) = Ph (\ k -> p (\ a -> k (f a)))
 
 instance Functor (Pf st) where
     --(<$>) :: (b -> a) -> Pf st b -> Pf st a
-    f `fmap` p = pure f <*> p -- TODO: With Apply
+    f `fmap` p = pure f <*> p
 
 instance Functor (Pm st) where
     --(<$>) :: (b -> a) -> Pm st b -> Pm st a
@@ -239,7 +226,7 @@ push :: v -> Steps r -> Steps (v, r)
 push v = Apply (\s -> (v, s))
 
 applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
-applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r)) -- TODO: Slightly different
+applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r))
 
 noAlts :: Steps a
 noAlts = Fail [] []
@@ -324,7 +311,7 @@ parse (Pm _ _ (Pf pf)) = fst . eval . pf (\ rest -> if eof rest
 
 eval :: Steps a -> a
 eval (Step    _  l ) = eval l
-eval (Fail    ss l ) = error (concat ss) -- TODO: Update to cheapest
+eval (Fail    ss l ) = error (concat ss)
 eval (Apply   f  v ) = f (eval v)
 eval (Micro   l    ) = eval l
 eval (Success l    ) = eval l
@@ -509,61 +496,6 @@ empty' = empty :: Pm (Str Char) Char
 tom'' = ((foldr (:) []) <$> many (sym 'a')) :: (Pm (Str Char) String)
 
 
--- type Op = String
-
--- data Pd st a = Pd Op (Pm st a) 
-
--- append :: Op -> Op -> Op
--- append msg str = str ++ " " ++ " " ++ msg
-
--- betw :: Op -> Op -> Op -> Op
--- betw str msg str' = append str' (append msg str)
-
--- instance Functor (Pd st) where
---     --(<$>) :: (b -> a) -> Pd st b -> Pd st a
---     f `fmap` (Pd str pm) = Pd (append "<$>" str) (f `fmap` pm)
---     --(<$) :: (b -> a) -> Pd st b -> Pd st (b -> a)
---     f <$ (Pd str pm)     = Pd (append "<$" str) (f <$ pm)
-
--- instance Applicative (Pd st) where
---     -- (<*>) :: Pd st (a -> b) -> Pd st a -> Pd st b
---     (Pd str pm) <*> ~(Pd str' qm) = Pd (betw str "<*>" str') (pm <*> qm)
---     -- (<*) :: Pd st a -> Pd st b -> Pd st a
---     (Pd str pm) <* ~(Pd str' qm)  = Pd (betw str "<*" str') (pm <* qm)
---     -- (*>) :: Pd st a -> Pd st b -> Pd st b
---     (Pd str pm) *> ~(Pd str' qm)  = Pd (betw str "*>" str') (pm *> qm)
---     -- pure :: a -> Pd st a
---     pure a                        = Pd ("return a") (pure a)
- 
--- instance Alternative (Pd st) where
---     --(<|>) :: Pd st a -> Pd st b -> Pd st a
---     (Pd str pm) <|> (Pd str' qm) = Pd (betw str "<|>" str') (pm <|> qm)
---     -- empty :: Pd st a
---     empty                        = Pd ("empty") (empty)
-
-
--- instance (Show symbol, (symbol `Describes` token), (Provides state symbol token))
---     => Symbol (Pd state) symbol token where
---     -- sym :: symbol -> (Pd state) token 
---     sym a = Pd ("sym " ++ (show a)) (sym a)
-
--- parse_d :: Eof st => Pd st a -> String
--- parse_d (Pd str pm) = show str
-
--- instance Greedy (Pd st) where
---     Pd str pm <<|> Pd str' qm = Pd (pr <<|> qr) (ph <<|> qh) (pf <<|> qf)
-
--- instance Try (Pd state) where
---     Pd str pm <<<|> Pd str' qm = Pd (pr <<<|> qr) (ph <<<|> qh) (pf <<<|> qf)
---     try (Pd str pm)             = Pd (try pr) (try ph) (try pf)
-
--- instance Ambiguous (Pd st) where
---     amb (Pd str pm) = Pd (amb pr) (amb ph) (amb pf) 
-
--- instance Micro (Pd state) where
---     micro (Pd str pm) = Pd (micro pr) (micro ph) (micro pf)
-
-
 
 
 -- Basic parsers --
@@ -575,88 +507,3 @@ token [] = return []
 r_token :: (Show b, Describes b a, Provides st b a) => [b] -> Pm st [a]
 r_token (x:xs) = sym x <:*> r_token xs
 r_token [] = return []
-
--- Pm combinators --
-    
-    -- Sequencing --
-
-(<**>) :: Pm st a -> Pm st (a -> b) -> Pm st b
-p1 <**> p2 = (\a f -> f a) <$> p1 <*> p2
-
-(<:*>) :: (Applicative (p st), Functor (p st)) => p st a -> p st [a] -> p st [a]
-p <:*> ps = (:) <$> p <*> ps
-
-(<*:>) :: (Applicative (p st), Functor (p st)) => p st [a] -> p st a -> p st [a]
-ps <*:> p = (\a b -> a ++ [b]) <$> ps <*> p
-
-(<+*>) :: (Applicative (p st), Functor (p st)) => p st [a] -> p st [a] -> p st [a]
-p <+*> ps = (++) <$> p <*> ps
-
-(<??>) :: Pm st a -> Pm st (a -> a) -> Pm st a
-p1 <??> p2 = p1 <**> (p2 `opt` id)
-
-(<++>) :: Pm st [a] -> Pm st [a] -> Pm st [a]
-p <++> q = (++) <$> p <*> q
-
-(<?|>) :: Pm st a -> (b, a -> b) -> Pm st b
-p <?|> (z, f) = try ((f <$> p) <<<|> return z)   
-
-    -- Choice / Branching --
-
-opt :: Pm st a -> a -> Pm st a
-p `opt` v = p <|> return v
-
---     -- Iteration --
-
-many :: Pm st a -> Pm st [a]
-many p = p <:*> many p `opt` []
-
-many1 :: Pm st a -> Pm st [a]
-many1 p = p <:*> many p
-
-chainl :: Pm st (a -> a -> a) -> Pm st a -> Pm st a
-chainl op p = applyAll <$> p <*> many (flip <$> op <*> p) 
-
-chainr :: Pm st (a -> a -> a) -> Pm st a -> Pm st a
-chainr op p = r where r = p <??> (flip <$> op <*> r)
-
-choice :: [Pm st a] -> Pm st a
-choice ps = foldr (<|>) (empty) ps
-
-seqnc :: [Pm st a] -> Pm st [a]
-seqnc (p:ps) = p <:*> seqnc ps
-seqnc [] = return []
-
-    -- Packing --
-
-pack :: (Show b, Describes b a0, Provides st b a0, Describes b a) => [b] -> Pm st a -> [b] -> Pm st a
-pack open p close = pack' (r_token open) p (r_token close)
-
-pack' :: Pm st b -> Pm st a -> Pm st b -> Pm st a
-pack' open p close = open *> p <* close
-
-parens :: (Describes Char a, Provides st Char a) => Pm st a -> Pm st a
-parens p = pack "(" p ")"
-
-brackets :: (Describes Char a, Provides st Char a) => Pm st a -> Pm st a
-brackets p = pack "[" p "]"
-
-curly :: (Describes Char a, Provides st Char a) => Pm st a -> Pm st a
-curly p = pack "{" p "}"
-
-tagged :: (Describes Char a, Provides st Char a) => Pm st a -> Pm st a
-tagged p = pack "<" p ">"
-
--- String Pms --
-
-letter :: (Describes Char a, Provides st Char a) => Pm st a
-letter = choice (map sym "abcdefghijklmnopqrstuvwxyz")
-
-word :: (Describes Char a, Provides st Char a) => Pm st [a]
-word = many1 letter
-
--- Utils --
-
-applyAll :: a -> [a -> a] -> a
-applyAll x (yf:yfs) = applyAll (yf x) yfs
-applyAll x [] = x
