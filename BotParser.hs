@@ -133,8 +133,8 @@ yOp = strAnyBiOp [(And, "y ")]
 oOp :: Parser BotState (Condition -> Condition -> Condition)
 oOp = strAnyBiOp [(Or, "o ")]
 
-condAtomOp :: Parser BotState (Username -> String -> AtomCondition)
-condAtomOp = strAnyUniOp [(SaysContains, "contiene ")] <|> strAnyUniOp[(SaysStarts, "empieza "), (SaysEnds, "termina ")] <* token "con "
+pCumpleRelacion :: Parser BotState (Username -> String -> AtomCondition)
+pCumpleRelacion = strAnyUniOp [(SaysContains, "contiene ")] <|> strAnyUniOp[(SaysStarts, "empieza "), (SaysEnds, "termina ")] <* token "con "
 
 pDiceNoEs :: Username -> Parser BotState (Username, Condition)
 pDiceNoEs usrAnterior = toUserPair (((Not . Atom) .) . SaysEq) <$> 
@@ -151,7 +151,7 @@ pDiceCondicion :: Username -> Parser BotState (Username, Condition)
 pDiceCondicion usrAnterior = (\ x f g y -> toUserPair ((f .) . g) x y) <$> 
                           (pLoQueDice ?*> optUsuario usrAnterior) 
                           <*> (pNo <?|> (Atom, const (Not . Atom))) 
-                          <*> condAtomOp 
+                          <*> pCumpleRelacion 
                           <*> pMensaje
 
 toUserPair :: (Username -> String -> Condition) -> Username -> String -> (Username, Condition)
@@ -170,23 +170,23 @@ propagarUsuario op pf a = do {
     ; (a'', b'') <- propagarUsuario op pf a'
     ; return (a'', (f b' b''))} <|> pf a
 
-pCondicion :: Parser BotState Condition
-pCondicion = snd <$> condicionBool []
+pCumpleCondicion :: Parser BotState Condition
+pCumpleCondicion = snd <$> condicionBool []
 
-pHacer :: Parser BotState Action
-pHacer = Say <$> (pDecir *> pMensaje)
+pHacerAlgo :: Parser BotState Action
+pHacerAlgo = Say <$> (pDecir *> pMensaje)
 
 optDecir :: Parser BotState Action
 optDecir = Say <$> (pDecir ?*> pMensaje)
 
-pSinoHacer :: Parser BotState Action
-pSinoHacer = ((pSino *> optDecir) <?|> (None, id))
+pSinoHacerOtraCosa :: Parser BotState Action
+pSinoHacerOtraCosa = ((pSino *> optDecir) <?|> (None, id))
 
 pSiEntonces :: Parser BotState Rule
 pSiEntonces = IfThenElse <$> 
-             (pSi *> pCondicion) 
-             <*> (pEntonces ?*> pHacer) 
-             <*> pSinoHacer 
+             (pSi *> pCumpleCondicion) 
+             <*> (pEntonces ?*> pHacerAlgo) 
+             <*> pSinoHacerOtraCosa 
              <*  pFin
 
 botParser :: Parser BotState [Rule]
