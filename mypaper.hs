@@ -1,5 +1,5 @@
 import Control.Monad.State
-import Prelude hiding ((<*>), (<|>), (<$>), (<*), (*>), pure)
+import Prelude hiding ((<*>), (<$>), (<*), (*>), pure)
 
 evenN :: Int -> [Int]
 evenN n = [x | x <- [1..], x < n]
