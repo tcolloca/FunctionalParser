@@ -1,0 +1,9 @@
+{
+si "juan" dice "hola" entonces decir "hola :)".
+si "juan" dice "chau" y "pedro" dice "chau" 
+    o "ana" dice "adios" entonces decir "chau!".
+
+si lo que dice "juan" contiene "bot" 
+    y no empieza con "hola" 
+       decir "que pasa?" sino "Hey!".
+}

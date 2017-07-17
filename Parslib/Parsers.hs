@@ -47,7 +47,7 @@ module Parslib.Parsers
 
 import Control.Applicative hiding ((<**>), many)
 import Control.Monad
-import Data.List (intercalate)
+import Data.List (intercalate, group, sort)
 import Data.Map (fromListWith, toList)
 
 -- %%%%% TYPE SYNONYMS %%%%% --
@@ -56,6 +56,13 @@ type Cost     = Int
 type Progress = Int
 
 -- %%%%% STEPS %%%%% --
+
+-- Step records progress
+-- Fail records that the parser couldn't parse the expected token
+-- Apply records that a function should be applied to the result (For future parser)
+-- Success records success on an alternative for greedy parsing
+-- Endh and Endf record complete parse results for ambiguous parsers
+-- Micro records a small penalty for one alternative to be taken as a second choice
 
 data Steps a where
     Step    :: Progress  -> Steps a                             -> Steps a
@@ -68,20 +75,32 @@ data Steps a where
 
 -- %%%%% STEPS %%%%% --
 
+-- Contains a Maybe with the position of the error, and the expected symbol as string.
+
 data Error = Error (Maybe String) String
 
 -- %%%%%%%% INTERFACES %%%%%%%% --
 
 --     &&& STATE  RELATED &&&   --
 
+-- Describes allows for a symbol not to necessarily be the same as the token.
+
 class symbol `Describes` token where
     eqSymTok    :: symbol -> token -> Bool
+
+-- Symbol contains the function to recognize a symbol.
 
 class Symbol p symbol token where
     sym         :: symbol -> p token
 
+-- Provides contains splitState which allows given a symbol and a state get the new position
+-- of the parser and if possible the token recognized, the progress made and the new state.
+
 class (Show position, Ord position) => Provides state symbol token position | state symbol -> token, symbol token -> position where
     splitState  :: symbol -> state -> (position, Maybe (Progress, token, state))
+
+-- Eof contains eof which tells whether the parser has reached the end of the input, or no more
+-- tokens have to be recognized.
 
 class Eof state where
     eof         :: state  -> Bool
@@ -94,6 +113,9 @@ instance Eq a => Describes a a where
 
 --     ~~ GREEDY ~~     --
 
+-- Greedy allows to choose the left branch of an alternative 
+-- if any progress can be made.
+
 class Greedy p where
     (<<|>) :: p a -> p a -> p a
 
@@ -103,19 +125,30 @@ l `best_gr` r = norm l `best_gr'` norm r
                            _            `best_gr'` r@(Step _ _) = r 
                            l            `best_gr'` r            = l `best` r
 
+-- Try allows to choose the left branch of an alternative if the
+-- left part of it sorrounded with try has been recognized.
+
 class Try p where
     (<<<|>) :: p a -> p a -> p a
     try :: p a -> p a
 
 --     ~~ AMBIGUOUS ~~     --
 
+-- Ambiguous allows to have more than one possible parsing result for a parser.
+
 class Ambiguous p where
     amb :: p a -> p [a]
+
+-- Micro allows to have an ambiguous parser by setting a small penalty to one of
+-- the branches.
 
 class Micro p where
     micro :: p a -> p a
 
 --      ~~ SWITCH ~~       --
+
+-- Switch allows to embed a parser into another by providing a function to switch
+-- state types.
 
 class Switch p where
     switch :: (st1 -> (st2, st2 -> st1)) -> p st2 a -> p st1 a
@@ -125,19 +158,33 @@ class Switch p where
 
 --     &&&   RECOGNISER    &&&    --
 
+-- The recogniser doesn't care about the token, and only takes care of recognizing.
+
 newtype Pr st a = Pr (forall r. (st -> Steps r) -> st -> Steps r)
 
 --     &&& HISTORY  PARSER &&&    --
+
+-- The history parser "saves a stack" of already parsed results that grows from
+-- left to right. It needs to reach the end of the input to provide a final result.
 
 newtype Ph st a = Ph (forall r. (a -> st -> Steps r) -> st -> Steps r)
 
 --     &&&  FUTURE PARSER  &&&    --
 
+-- The future parser "saves a stack" of future results that grows from right to left,
+-- being the most right the future values. Because these future results are "conceptual",
+-- and are calculated lazily, it allows to provide results as soon as these are available.
+
 newtype Pf st a = Pf (forall r. (st -> Steps r) -> st -> Steps (a, r))
 
 --     &&& COMBINED PARSER &&&    --
 
+-- This parser combines the three mentioned previously as on some functions like ">>=" or "<*"
+-- one of them might need another one.
+
 data    Pm st a = Pm (Pr st a) (Ph st a) (Pf st a)
+
+-- Just to provide a nicer name, we provide a type-alias for Pm.
 
 type    Parser = Pm
 
@@ -161,11 +208,18 @@ unPm_f (Pm _ _ (Pf f)) = f
 
 -- %%%%%% FUNCTOR (Applying a function) %%%%% --
 
+--Allows to lift a function to the parser type.
+
+-- Once again, the recogniser doesn't care about the token to be made.
+
 instance Functor (Pr st) where
     --(<$>) :: (b -> a) -> Pr st b -> Pr st a
     f `fmap` (Pr r) = (Pr r)
     --(<$) :: (b -> a) -> Pr st b -> Pr st (b -> a)
     f <$ (Pr r)     = Pr r
+
+-- For the future parser, the function is applied to the last token recognized.
+-- It's a bit more efficient that pure f <*> p.
 
 instance Functor (Ph st) where
     --(<$>) :: (b -> a) -> Ph st b -> Ph st a
@@ -185,6 +239,10 @@ instance Functor (Pm st) where
 
 -- %%%%% APPLICATIVE (Sequencing) %%%%% --
 
+-- <*>: For recognisers it doesn't matter the tokens so it's just the 
+-- concatenation of the parsers.
+-- pure: Once again, the token doesn't matter, so it's the id function wrapped.
+
 instance Applicative (Pr st) where
     -- Pr st (a -> b) -> Pr st a -> Pr st b 
     (Pr r1) <*> (Pr r2) = Pr (\ k st -> r1 (r2 k) st)
@@ -195,17 +253,29 @@ instance Applicative (Pr st) where
     -- pure :: a -> Pr st a
     pure r              = Pr (\ k st -> k st)
 
+-- <*>: For history parser the function parsed by the first parser it's 
+-- applied to the result parsed by the second one.
+-- pure: The history parser takes the result taken as argument as the last
+-- recognized token.
+
 instance Applicative (Ph st) where
     -- (<*>) :: Ph st (a -> b) -> Ph st a -> Ph st b
     (Ph p) <*> (Ph q) = Ph (\ k -> p (\ f -> q (\ a -> k (f a))))
     -- pure :: a -> Ph st a
     pure r            = Ph (\ k -> k r)
 
+-- <*>: For future parsers it stores the function to be applied and the future
+-- value to which it should be applied.
+-- pure: The future parser puts the value received in the top of the stack.
+
 instance Applicative (Pf st) where
     -- (<*>) :: Pf st (a -> b) -> Pf st a -> Pf st b
     (Pf p) <*> (Pf q) = Pf (\ k st -> applyf (p (q k) st))
     -- pure :: a -> Pf st a
     pure a            = Pf (\ k st -> push a (k st))
+
+-- <* and *> use the recogniser for the part that misses the "<" or ">" as the result
+-- should be ignored.
 
 instance Applicative (Pm st) where
     -- (<*>) :: Pm st (a -> b) -> Pm st a -> Pm st b
@@ -222,6 +292,9 @@ instance Applicative (Pm st) where
     pure a                                             = Pm (pure a) (pure a) (pure a)
 
 -- %%%%% ALTERNATIVE (Branching) %%%%% --
+
+-- All parsers rely on best function to use a BFS approach.
+-- empty represents failure.
 
 instance Alternative (Pr st) where
     --(<|>) :: Pr st a -> Pr st b -> Pr st a
@@ -249,6 +322,8 @@ instance Alternative (Pm st) where
 
 -- %%%%% MONAD (Adding effects) %%%%% --
 
+-- As bind needs a result, the history parser need to be used for the 3 parsers.
+
 instance Monad (Ph st) where
     -- Ph st a -> (a -> Ph st b) -> Ph st b
     (Ph p) >>= a2q = Ph (\ k -> p (\ a -> unPh (a2q a) k))       
@@ -261,14 +336,24 @@ instance Monad (Pm st) where
 
 -- %%%%% HELPER FUNCTIONS %%%%%% --
 
+-- push adds a value to the top of the future values stack of the future parser.
+
 push :: v -> Steps r -> Steps (v, r)
 push v = Apply (\ s -> (v, s))
+
+-- applyf adds to the Steps registry structure that a function should be applied.
+-- The use of ~ allows to postpone the pattern match of the next result so that the
+-- fuction of the left side can be executed while it doesn't need the right side.
 
 applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
 applyf = Apply (\ (b2a, ~(b, r)) -> (b2a b, r))
 
 noAlts :: Steps a
 noAlts = Fail [Error Nothing "Probably no alternative worked."]
+
+-- The next functions allow to display errors. Basically it displays the different
+-- errors found in each position, if set, on different lines. Thus, errors refering
+-- to the same position are grouped, and duplicate expected symbols are removed.
 
 showErrors :: [Error] -> String
 showErrors errors = intercalate "\n" (map showError (convertPairToList (map errorToPair errors)))
@@ -278,13 +363,18 @@ errorToPair (Error pos sym) = (pos, sym)
 
 showError :: (Maybe String, [String]) -> String
 showError (Just pos, x:[]) = "Expected: " ++ x ++ " at position " ++ pos
-showError (Just pos, xs  ) = "Expected one of: [" ++ (intercalate ", " xs) ++ "] at position " ++ pos
+showError (Just pos, xs  ) = "Expected one of: [" ++ (intercalate ", " (rmDups xs)) ++ "] at position " ++ pos
 showError (Nothing , xs  ) = concat xs
+
+rmDups :: (Ord a) => [a] -> [a]
+rmDups = map head . group . sort
 
 convertPairToList:: Ord k => [(k, v)] -> [(k, [v])]
 convertPairToList ls = toList (fromListWith (++) (map (\ (x, y) -> (x, [y])) ls))
  
 -- %%%%% BEST %%%%% --
+
+-- best allows to parse in a BFS way by advancing one step at a time. 
 
 best :: Steps a -> Steps a -> Steps a
 l `best` r            = norm l `best'` norm r
@@ -308,6 +398,9 @@ Endh as         l `best'` r              = Endh as               (l `best` r)
 l                 `best'` Endh bs      r = Endh bs               (l `best` r)
 l                 `best'`  r             = l `best` r 
 
+-- norm allows to get the next "Step"-like constructor of the Steps registry,
+-- this means not the Apply one.
+
 norm :: Steps a -> Steps a 
 norm (Apply f (Step    n l   ) ) = Step n (Apply f l)
 norm (Apply f (Fail    ss    ) ) = Fail ss
@@ -319,6 +412,10 @@ norm (Apply f (Endh    _  _  ) ) = error "Found Endh on the loose when calling n
 norm steps = steps
 
 -- %%%%% SYMBOL %%%%% --
+
+-- sym works by using the splitState function with the given symbol and current state,
+-- and if the symbol matches the recognized token consider it as one
+-- step of progress made.
 
 instance (Show symbol, (symbol `Describes` token), (Provides state symbol token pos))
     => Symbol (Pr state) symbol token where
@@ -353,6 +450,8 @@ instance (Show symbol, (symbol `Describes` token), (Provides state symbol token 
     sym a = Pm (sym a) (sym a) (sym a)
 
 -- %%%%% PARSE %%%%% --
+
+-- parse allows to obtain the result of a given parser with a certain state.
 
 parse :: Eof st => Pm st a -> st -> a
 parse (Pm _ _ (Pf pf)) = fst . eval . pf (\ rest -> if eof rest

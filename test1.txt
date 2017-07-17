@@ -1,0 +1,5 @@
+{
+si lo que dice "juan" contiene "bot" 
+    y no empieza con "hola" 
+       decir "que pasa?" sino "Hey!".
+}
