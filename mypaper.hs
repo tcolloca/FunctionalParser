@@ -1,4 +1,5 @@
 import Control.Monad.State
+import Control.Applicative (Applicative(pure, (<*>)), Alternative((<|>), empty))
 import Prelude hiding ((<*>), (<$>), (<*), (*>), pure)
 
 evenN :: Int -> [Int]
@@ -28,38 +29,36 @@ sumCps :: Int -> Int -> (Int -> r) -> r
 sumCps x y = \ k -> k (x + y)
 
 infixl 7 <$> 
-infixl 5 <*> 
-infixr 3 <|>
 
-newtype Parser s r = P ([s] -> [(r, [s])])
+newtype GenericParser m s r = P ([s] -> m (r, [s]))
 
-unP :: Parser s r -> ([s] -> [(r, [s])])
+instance Monad m => Functor (GenericParser m s) where
+    fmap = liftM
+
+instance Monad m => Applicative (GenericParser m s) where
+    pure r  = P (\ inp -> pure (r, inp))
+    p <*> q = p >>= (\ r1 ->
+              q >>= (\ r2 ->
+              return (r1 r2)))
+
+instance Monad m => Monad (GenericParser m s) where
+    p >>= f = P (\ inp -> (unP p) inp >>= (\ (v, inp') -> unP (f v) inp')) 
+
+instance (Alternative m, Monad m) => Alternative (GenericParser m s) where
+    empty   = P (\ inp -> empty)
+    p <|> q = P (\ inp -> unP p inp <|> unP q inp)
+
+type Parser s r = GenericParser [] s r
+
+
+unP :: GenericParser m s r -> ([s] -> m (r, [s]))
 unP (P p) = p
 
 
 item :: Eq s => s -> Parser s s
 item s = P (\ inp -> case inp of
-                     (x:xs) | s == x -> [(x, xs)]
-                     otherwise       -> [])   
-
-pure :: r -> Parser s r
-pure r = P (\ inp -> [(r, inp)])
-
-empty :: Parser s r
-empty  = P (\ inp -> [])
-
-(<*^>) :: Parser s a -> Parser s b -> Parser s (a, b)
-p <*^> q = P (\ inp -> [((r1, r2), out') | (r1, out ) <- unP p inp
-                                         , (r2, out') <- unP q out]) 
-
-
-(<*>) :: Parser s (b -> a) -> Parser s b -> Parser s a
-p <*> q = P (\ inp -> [(r1 r2, out') | (r1, out)  <- unP p inp
-                                     , (r2, out') <- unP q out])  
-
-
-(<|>) :: Parser s a -> Parser s a -> Parser s a
-p <|> q = P (\ inp -> unP p inp ++ unP q inp)  
+                     (x:xs) | s == x -> pure (x, xs)
+                     otherwise       -> empty)   
 
 opt :: Parser s a -> a -> Parser s a
 p `opt` v = p <|> pure v
@@ -196,3 +195,6 @@ p1 <??> p2 = p1 <**> (p2 `opt` id)
 
 chainr :: Parser s (a -> a -> a) -> Parser s a -> Parser s a
 chainr op p = p <??> (flip <$> op <*> chainr op p)
+
+test :: GenericParser m Char a -> String -> m (a, String)
+test p str = (unP p) str

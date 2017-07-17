@@ -9,10 +9,33 @@ import Data.List (intercalate)
 
 --- TEST ---
 
+data StrInt s = StrInt {input' :: [s],
+                  prog'  :: !Int,
+                  pos'  :: !Position} 
+
+instance Provides (StrInt Char) Char Int Position where
+    splitState s (StrInt []     _    pos ) = (pos, Nothing)                                
+    splitState s (StrInt (t:ts) prog pos ) = (pos, Just (prog + 1, toInt t, StrInt ts (prog + 1) newpos)) 
+                                              where newpos = updatePos pos s
+
+instance Eof (StrInt a) where
+    eof (StrInt l _ _) = null l
+
+toInt :: Char -> Int
+toInt x = fromEnum x - fromEnum '0'
+
+stringToStrInt :: String -> StrInt Char
+stringToStrInt ls = StrInt ls 0 (0, 0) 
+
+test' :: Parser (StrInt Char) Int -> String -> Int
+test' p str = parse p (stringToStrInt str)
+
+
 class DescribesPosition a where
     updatePos :: Position -> a -> Position
 
-data StrState s = StrState {input :: [s],
+data StrState s = StrState {
+                  input :: [s],
                   prog  :: !Int,
                   pos   :: !Position} 
 
@@ -30,6 +53,7 @@ instance DescribesPosition Char where
     updatePos (l, c) '\t' = (l    , c + 4)
     updatePos (l, c) '\n' = (l + 1, 0    )
     updatePos (l, c) _    = (l    , c + 1)
+
 
 stringToStrState :: String -> StrState Char
 stringToStrState ls = StrState ls 0 (0, 0) 
@@ -144,7 +168,8 @@ pDiceNoEs usrAnterior = toUserPair (((Not . Atom) .) . SaysEq) <$>
 
 pDiceEs :: Username -> Parser BotState (Username, Condition)
 pDiceEs usrAnterior = toUserPair ((Atom .) . SaysEq) <$> 
-                          (optUsuario usrAnterior <* pDice <|> pLoQueDice *> optUsuario usrAnterior <* pEs) 
+                          (     optUsuario usrAnterior <* pDice 
+                            <|> pLoQueDice *> optUsuario usrAnterior <* pEs) 
                           <*> pMensaje
 
 pDiceCondicion :: Username -> Parser BotState (Username, Condition)
@@ -190,7 +215,7 @@ pSiEntonces = IfThenElse <$>
              <*  pFin
 
 botParser :: Parser BotState [Rule]
-botParser = curly (many pSiEntonces)
+botParser = curly (many1 pSiEntonces)
 
 toJson :: [Rule] -> String
 toJson rs = "{\n" ++ intercalate ", \n" (map (ruleToJson 1) rs) ++ "\n}"

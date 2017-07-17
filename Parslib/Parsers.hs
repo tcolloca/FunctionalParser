@@ -59,7 +59,7 @@ type Progress = Int
 
 data Steps a where
     Step    :: Progress  -> Steps a                             -> Steps a
-    Fail    :: [Error]   -> Steps a
+    Fail    :: [Error]                                          -> Steps a
     Apply   :: (b -> a)  -> Steps b                             -> Steps a
     Success :: Steps a                                          -> Steps a
     Endh    :: ([a], [a] -> Steps r) -> Steps (a, r)            -> Steps (a, r)
@@ -99,8 +99,9 @@ class Greedy p where
 
 best_gr :: Steps a -> Steps a -> Steps a
 l `best_gr` r = norm l `best_gr'` norm r
-                    where  l@(Step _ _) `best_gr'` _ = l
-                           l            `best_gr'` r = l `best` r
+                    where  l@(Step _ _) `best_gr'` _            = l
+                           _            `best_gr'` r@(Step _ _) = r 
+                           l            `best_gr'` r            = l `best` r
 
 class Try p where
     (<<<|>) :: p a -> p a -> p a
@@ -192,19 +193,19 @@ instance Applicative (Pr st) where
     -- (*>) :: Pr st a -> Pr st b -> Pr st b
     (Pr r1) *> (Pr r2)  = Pr (r1 . r2)
     -- pure :: a -> Pr st a
-    pure r              = Pr (\k st -> k st)
+    pure r              = Pr (\ k st -> k st)
 
 instance Applicative (Ph st) where
     -- (<*>) :: Ph st (a -> b) -> Ph st a -> Ph st b
     (Ph p) <*> (Ph q) = Ph (\ k -> p (\ f -> q (\ a -> k (f a))))
     -- pure :: a -> Ph st a
-    pure r            = Ph (\k -> k r)
+    pure r            = Ph (\ k -> k r)
 
 instance Applicative (Pf st) where
     -- (<*>) :: Pf st (a -> b) -> Pf st a -> Pf st b
     (Pf p) <*> (Pf q) = Pf (\ k st -> applyf (p (q k) st))
     -- pure :: a -> Pf st a
-    pure a            = Pf (\k st -> push a (k st))
+    pure a            = Pf (\ k st -> push a (k st))
 
 instance Applicative (Pm st) where
     -- (<*>) :: Pm st (a -> b) -> Pm st a -> Pm st b
@@ -261,10 +262,10 @@ instance Monad (Pm st) where
 -- %%%%% HELPER FUNCTIONS %%%%%% --
 
 push :: v -> Steps r -> Steps (v, r)
-push v = Apply (\s -> (v, s))
+push v = Apply (\ s -> (v, s))
 
 applyf :: Steps (b -> a, (b, r)) -> Steps (a, r)
-applyf = Apply (\(b2a, ~(b, r)) -> (b2a b, r))
+applyf = Apply (\ (b2a, ~(b, r)) -> (b2a b, r))
 
 noAlts :: Steps a
 noAlts = Fail [Error Nothing "Probably no alternative worked."]

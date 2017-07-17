@@ -23,7 +23,7 @@ class (Applicative (p st), Functor (p st), Alternative (p st)) => CombinablePars
 instance CombinableParser Parser st
 
 (<**>) :: CombinableParser p st => p st a -> p st (a -> b) -> p st b
-p1 <**> p2 = (\a f -> f a) <$> p1 <*> p2
+p1 <**> p2 = (flip ($)) <$> p1 <*> p2
 
 (<:*>) :: CombinableParser p st => p st a -> p st [a] -> p st [a]
 p <:*> ps = (:) <$> p <*> ps
@@ -129,6 +129,12 @@ letter = choice (map symSpaces "abcdefghijklmnopqrstuvwxyz")
 word :: (Provides st Char Char pos) => Parser st String
 word = many1 letter
 
+sepBy1 :: Parser s a -> Parser s b -> Parser s [a]
+sepBy1 p sep = p <:*> many (sep *> p)
+
+sepBy :: Parser s a -> Parser s b -> Parser s [a]
+sepBy p sep = sepBy1 p sep <|> return []
+
 -- String Operators -- 
 
 strUniOp :: (Describes Char a', Provides st Char a' pos) => (a -> b, [Char]) -> Parser st (a -> b)
@@ -185,6 +191,14 @@ addSubtrOps = anyBiOp [((+), "+"), ((-), "-")]
 
 multDivOps :: (Describes Char a', Provides st Char a' pos) => Parser st (Int -> Int -> Int)
 multDivOps = anyBiOp [((*), "*")]
+
+
+chainr1' :: (Provides st Char Int pos) => Parser st (Int -> Int -> Int) -> Parser st Int -> Parser st Int
+chainr1' op p = p <??> (flip <$> op <*> chainr1' op p)
+
+add :: (Provides st Char Int pos) => Parser st (Int -> Int -> Int)
+add = const (+) <$> token "+" 
+
 
 
 instance Describes Char Int where
