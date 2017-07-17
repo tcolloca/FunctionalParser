@@ -1,0 +1,1 @@
+[IfThenElse (And (Atom (SaysContains "juan" "bot")) (Not (Atom (SaysStarts "juan" "hola")))) (Say "que pasa?") (Say "Hey!")]

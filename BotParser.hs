@@ -75,6 +75,13 @@ testFile p filename = do {
                         return (parse p (stringToStrState contents))
                       }
 
+main :: IO ()
+main = do {
+         filename <- readFile "config.properties";
+         rules    <- testFile botParser filename;
+         writeFile "structure.txt" (show rules)
+       }
+
 -- %%%% ESTRUCTURA QUE GENERA EL BOTPARSER %%%% --
 
 data Rule          = IfThenElse Condition Action Action 
